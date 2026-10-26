@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>RepoBuilder</AssemblyName>
+    <RootNamespace>RepoBuilder</RootNamespace>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+
+    <!-- major.minor.build, shown in the header. Major: on the owner's instruction only.
+         Minor: every delivered revision, build back to 0. Build: small changes such as
+         README or wording. -->
+    <Version>1.31.0</Version>
+    <!-- Without this a build from a git checkout appends +<commit> to the version, so
+         the same source would read differently built from a zip. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
+    <!-- No App.xaml: we supply our own [STAThread] Main -->
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <StartupObject>RepoBuilder.Program</StartupObject>
+
+    <!-- Self-contained single file, native assemblies bundled in -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- IncludeAllContentForSelfExtract is deliberately NOT set. With it, every
+         managed assembly is unpacked to %TEMP%\.net\RepoBuilder\<hash>\ — a fresh
+         copy per build, never cleaned up by the runtime. Without it only the native
+         libraries extract. Nothing needs files on disk: the exe path comes from
+         Environment.ProcessPath and app_256.png from GetManifestResourceStream. -->
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Compiled into the assembly; read back via GetManifestResourceStream. -->
+    <EmbeddedResource Include="app_256.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The SDK doing this build, stamped into the assembly and shown in the header.
+         NETCoreSdkVersion is defined by the SDK itself, so whichever SDK actually runs
+         writes its own version with nothing passed in, and the same SDK always writes
+         the same string, so reproducible builds stay reproducible.
+         BundledNETCoreAppPackageVersion is the runtime that SDK requests and packs (the
+         desktop pack shares the number) — derivable from the SDK, but shown so a
+         verifier knows which runtime packs to fetch. It is the requested version, not a
+         readback; restore fails on any other, so the two cannot differ. -->
+    <AssemblyMetadata Include="BuiltWithSdk" Value="$(NETCoreSdkVersion)" />
+    <AssemblyMetadata Include="BuiltWithRuntime" Value="$(BundledNETCoreAppPackageVersion)" />
+  </ItemGroup>
+
+</Project>

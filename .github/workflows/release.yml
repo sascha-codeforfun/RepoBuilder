@@ -1,0 +1,127 @@
+# Written by RepoPublisher. Builds the exe the way RepoBuilder does, attests its provenance and
+# attaches it to the release. Runs when you publish a release on GitHub; nothing else starts it.
+name: Release build
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write      # attach the exe and append the build record to the release notes
+  id-token: write      # sign the provenance (OIDC)
+  attestations: write  # store the attestation
+
+env:
+  PROJECT: 'RepoBuilder.csproj'
+  APP_NAME: 'RepoBuilder'
+  TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      # Windows runners convert LF to CRLF on checkout by default. That would change embedded
+      # resources and multi-line string literals, so the exe would differ from an offline
+      # build of the same zip. Check out the exact bytes that were pushed.
+      - name: Keep line endings exactly as committed
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # GitHub picks the SDK; the build record below says which one, so the build can be
+      # repeated offline with exactly that SDK.
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Compare the tag with the csproj version (warns, never blocks)
+        id: tagcheck
+        shell: pwsh
+        run: |
+          [xml]$proj = Get-Content -Raw -LiteralPath $env:PROJECT
+          $node = $proj.SelectNodes('//*[local-name()="Version"]') | Select-Object -First 1
+          $version = if ($node) { $node.InnerText.Trim() } else { '(none)' }
+          $tagVersion = $env:TAG -replace '^[vV]', ''
+          if ($tagVersion -eq $version) {
+            $result = "OK - tag $env:TAG matches the csproj version $version"
+          } else {
+            $result = "WARNING - tag $env:TAG, but the csproj and the exe report $version. The tag $env:TAG now holds the code of $version, so publishing a genuine $tagVersion later will hit 'tag already exists': delete this release and its tag on GitHub, or move on to the next version."
+            Write-Output "::warning title=Tag does not match the csproj version::$result"
+          }
+          "### Tag check`n`n$result" >> $env:GITHUB_STEP_SUMMARY
+          "result=$result" >> $env:GITHUB_OUTPUT
+
+      - name: Publish (RepoBuilder's flags)
+        shell: pwsh
+        run: |
+          dotnet publish $env:PROJECT -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true -p:NuGetAudit=false `
+            "-p:ArtifactsPath=$env:RUNNER_TEMP\artifacts" -p:ContinuousIntegrationBuild=true `
+            -v minimal -o "$env:RUNNER_TEMP\publish"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stage the exe, its hash and the toolchain versions
+        id: stage
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          $exe = "$env:APP_NAME.exe"
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP\publish\$exe" -Destination "release\$exe"
+          $hash = (Get-FileHash -LiteralPath "release\$exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $PWD "release\$exe.sha256"), "$hash *$exe`n")
+          $props = (dotnet msbuild $env:PROJECT -getProperty:NETCoreSdkVersion -getProperty:BundledNETCoreAppPackageVersion) -join "`n" | ConvertFrom-Json
+          "hash=$hash" >> $env:GITHUB_OUTPUT
+          "sdk=$($props.Properties.NETCoreSdkVersion)" >> $env:GITHUB_OUTPUT
+          "runtime=$($props.Properties.BundledNETCoreAppPackageVersion)" >> $env:GITHUB_OUTPUT
+
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/${{ env.APP_NAME }}.exe
+
+      - name: Attach to the release and append the build record
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXE_HASH: ${{ steps.stage.outputs.hash }}
+          SDK: ${{ steps.stage.outputs.sdk }}
+          RUNTIME: ${{ steps.stage.outputs.runtime }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+          TAG_CHECK: ${{ steps.tagcheck.outputs.result }}
+        run: |
+          # gh output is UTF-8; without this, pwsh on Windows reads it in the console code page
+          # and non-ASCII text in the notes would be mangled on the way back.
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $exe = "$env:APP_NAME.exe"
+          gh release upload $env:TAG "release/$exe" "release/$exe.sha256" --clobber --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $body = (gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json body --jq .body) -join "`n"
+          # A re-run replaces the earlier build record instead of adding a second one.
+          $marker = $body.IndexOf("`n---`n`n**Build record**")
+          if ($marker -ge 0) { $body = $body.Substring(0, $marker) }
+          $warning = if ($env:TAG_CHECK -like 'WARNING*') { "`n> **Warning: the tag does not match the csproj version.** $env:TAG_CHECK`n" } else { '' }
+          $record = @(
+            '',
+            '---',
+            '',
+            '**Build record** (written by the release workflow)',
+            $warning,
+            "- Built with SDK: $env:SDK",
+            "- Runtime: $env:RUNTIME",
+            "- Exe SHA-256: $env:EXE_HASH",
+            "- Attestation: $env:ATTESTATION_URL",
+            "- Tag check: $env:TAG_CHECK"
+          ) -join "`n"
+          $notes = Join-Path $env:RUNNER_TEMP 'notes.md'
+          [IO.File]::WriteAllText($notes, $body.TrimEnd() + "`n" + $record + "`n")
+          gh release edit $env:TAG --repo $env:GITHUB_REPOSITORY --notes-file $notes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
