@@ -13,7 +13,7 @@
     <!-- major.minor.build, shown in the header. Major: on the owner's instruction only.
          Minor: every delivered revision, build back to 0. Build: small changes such as
          README or wording. -->
-    <Version>1.31.0</Version>
+    <Version>1.31.1</Version>
     <!-- Without this a build from a git checkout appends +<commit> to the version, so
          the same source would read differently built from a zip. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
